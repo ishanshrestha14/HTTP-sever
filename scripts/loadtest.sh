@@ -5,17 +5,12 @@
 # Requires: Maven, wrk  (macOS: brew install maven wrk)
 #
 # Usage: bash scripts/loadtest.sh [connections] [duration]
-#   defaults: 16 connections, 30s, 4 wrk threads
-#
-# Why 16 connections? The server uses a fixed pool of 16 worker threads, and each
-# worker stays pinned to one keep-alive connection until it closes. With more than
-# 16 connections, the extras get no service until a worker frees up (30s idle
-# timeout), so wrk would only be measuring 16 of them anyway.
+#   defaults: 100 connections, 30s, 4 wrk threads
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CONNECTIONS="${1:-16}"
+CONNECTIONS="${1:-100}"
 DURATION="${2:-30s}"
 THREADS=4
 

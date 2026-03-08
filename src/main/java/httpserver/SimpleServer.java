@@ -94,7 +94,11 @@ public class SimpleServer {
     public static void main(String[] args) throws IOException {
         staticFiles = new StaticFileServer("public");
 
-        ExecutorService pool = Executors.newFixedThreadPool(16);
+        // One virtual thread per connection. A keep-alive connection blocks its thread
+        // on readLine() between requests; with platform threads in a fixed pool that
+        // capped us at 16 open connections. Virtual threads unmount while blocked on
+        // I/O, so idle connections cost almost nothing and there's no cap.
+        ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor();
         
         int port = 8080;
         ServerSocket serverSocket = new ServerSocket(port);

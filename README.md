@@ -2,7 +2,7 @@
 
 An HTTP/1.1 server written from scratch in plain Java: raw `ServerSocket`s, no frameworks, no runtime dependencies. It handles keep-alive, path-parameter routing, chunked streaming, static files with traversal protection, cookie sessions, and TLS.
 
-**Performance:** ~71,000 requests/sec on a dynamic route, ~55,500 requests/sec on a static file, with p99 latency under 0.7 ms ([benchmark](#benchmark)).
+**Performance:** ~64,700 requests/sec across 100 concurrent keep-alive connections on a dynamic route (p99 4.1 ms), and ~38,800 requests/sec on a static file ([benchmark](#benchmark)).
 
 ---
 
@@ -12,7 +12,7 @@ An HTTP/1.1 server written from scratch in plain Java: raw `ServerSocket`s, no f
 |---|---|---|
 | HTTP/1.1 request parsing | `HttpRequest` | Request line, headers (case-insensitive), `Content-Length` POST bodies |
 | Keep-alive connections | `SimpleServer` | Many requests per TCP connection; honors `Connection: close`; 30s idle timeout |
-| Concurrency | `SimpleServer` | Fixed pool of 16 worker threads (`ExecutorService`) |
+| Concurrency | `SimpleServer` | One virtual thread per connection (Java 21), with no fixed connection cap |
 | Routing | `Router` | Exact routes, path params (`/users/:id/posts/:postId`), URL-decoded query strings |
 | Static files | `StaticFileServer` | Served from `public/`, MIME detection for ~20 types, 8 KB streaming, `index.html` fallback |
 | Directory traversal protection | `StaticFileServer` | Canonicalizes the path and checks containment with `Path.startsWith`, which returns 403 for `../` escapes |
@@ -53,7 +53,7 @@ An HTTP/1.1 server written from scratch in plain Java: raw `ServerSocket`s, no f
 
 ## Running
 
-Requires Java 17+ and Maven.
+Requires Java 21+ and Maven.
 
 ```bash
 mvn package
@@ -123,16 +123,20 @@ mvn test
 bash scripts/loadtest.sh            # needs wrk: brew install wrk
 ```
 
-`wrk -t4 -c16 -d30s --latency`, with the server and wrk on the same machine (Apple M4 Pro, 12 cores, 24 GB, OpenJDK 25). Request logging goes to `/dev/null`.
+`wrk -t4 -d30s --latency`, with the server and wrk on the same machine (Apple M4 Pro, 12 cores, 24 GB, OpenJDK 25). Request logging goes to `/dev/null`.
 
-| Endpoint | Requests/sec | p50 | p99 | Errors |
-|---|---|---|---|---|
-| `GET /users/42` (router + path param) | **70,987** | 0.22 ms | 0.31 ms | 0 |
-| `GET /index.html` (static file from disk) | **55,517** | 0.27 ms | 0.62 ms | 0 |
+| Endpoint | Connections | Requests/sec | p50 | p99 | Errors |
+|---|---|---|---|---|---|
+| `GET /users/42` (router + path param) | 100 | **64,722** | 1.49 ms | 4.13 ms | 0 |
+| `GET /index.html` (static file from disk) | 100 | **38,763** | 3.14 ms | 7.90 ms | 0 |
+| `GET /users/42` | 16 | 64,729 | 0.24 ms | 0.43 ms | 0 |
+| `GET /index.html` | 16 | 42,370 | 0.41 ms | 0.95 ms | 0 |
 
 These are loopback numbers. They show request-handling overhead, not real network throughput.
 
-**Why 16 connections:** The worker pool has 16 threads, and each worker stays pinned to one keep-alive connection until it closes or idles out (30s). Throughput at `-c100` is the same as at `-c16` (~72k req/s), but only 16 connections get served. The other 84 wait, and a 17th client gets no response until a worker frees up. See [Limitations](#known-limitations).
+**Platform threads vs. virtual threads.** The server first used a fixed pool of 16 platform threads. Each keep-alive connection held one thread while it waited for its next request, so only 16 connections could be open at once. A 17th client got no response until a worker freed up (30s idle timeout). That version did ~71,000 req/s (dynamic) and ~55,500 req/s (static), but only for those 16 connections. At `-c100`, the other 84 connections got no service.
+
+With virtual threads, every connection gets served: per-thread request rates in wrk vary by about ±1k, where before they varied by ±10k. With 200 idle keep-alive connections held open, a new client is still answered in under 1 ms. The cost is roughly 9% lower throughput on dynamic routes and 24% on static files. That comes from the overhead of scheduling virtual threads and from blocking `FileInputStream` reads.
 
 ---
 
@@ -142,7 +146,7 @@ These are loopback numbers. They show request-handling overhead, not real networ
 
 **Threads, not NIO.** Thread-per-connection with blocking I/O is the simplest model to reason about. The handler reads like a script: read request, route, write response, loop.
 
-**Fixed thread pool.** Unbounded thread creation runs out of memory under load. A fixed pool caps resource use, but with keep-alive it also caps concurrent connections (see below).
+**Virtual threads.** Keep-alive connections spend most of their time idle and blocked on `readLine()`. A platform thread per connection is too expensive, and a fixed pool caps how many connections can be open. A virtual thread is unmounted from its carrier thread while it waits on socket I/O, so the simple blocking style still works with thousands of open connections.
 
 **TLS is transparent.** `SSLServerSocket.accept()` returns a socket whose streams are already encrypted, so HTTP and HTTPS share one `handleClient` method.
 
@@ -152,7 +156,7 @@ These are loopback numbers. They show request-handling overhead, not real networ
 
 ## Known Limitations
 
-- **Connection cap of 16.** Keep-alive connections each hold a worker thread, so client 17 waits. Fixes: switch to virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`, Java 21+), or move to NIO selectors.
+- **No connection limit.** Virtual threads remove the 16-connection cap, but nothing replaces it. Many slow or idle clients (Slowloris-style) can hold sockets open until the 30s idle timeout.
 - **No HTML escaping.** `/submit`, `/search` and `/users/:id` echo user input into HTML as-is (reflected XSS). This is acceptable for a learning project but not for anything public.
 - **Request bodies** are read as characters, not bytes, so `Content-Length` is only exact for ASCII bodies. Only `Content-Length` bodies are supported, not chunked request bodies.
 - **Demo credentials** are hard-coded in plain text in `SimpleServer`. Sessions live in memory and are lost on restart.
