@@ -34,8 +34,6 @@ public class SimpleServer {
                         "<h1>🚀 My Java Server</h1>" +
                         "<p>" +
                         "<a href='/hello' style='color:#38bdf8'>Hello</a> | " +
-                        "<a href='/users/42' style='color:#38bdf8'>User 42</a> | " +
-                        "<a href='/search?q=java' style='color:#38bdf8'>Search</a> | " +
                         "<a href='/stream/countdown' style='color:#38bdf8'>Stream</a> | " +
                         "<a href='/login' style='color:#4ade80'>Login</a> | " +
                         "<a href='/dashboard' style='color:#fbbf24'>Dashboard</a>" +
@@ -93,26 +91,76 @@ public class SimpleServer {
 
     public static void main(String[] args) throws IOException {
         staticFiles = new StaticFileServer("public");
+
+        ExecutorService pool = Executors.newFixedThreadPool(16);
         
         int port = 8080;
         ServerSocket serverSocket = new ServerSocket(port);
         System.out.println("Server started on port " + port);
 
-        ExecutorService pool = Executors.newFixedThreadPool(8);
+        // --- HTTPS on port 8443 ---
+        // Only starts if keystore.jks exists — fails gracefully otherwise
+        ServerSocket httpsSocket = null;
+        File keystoreFile = new File("keystore.jks");
 
+        if (keystoreFile.exists()) {
+            try {
+                httpsSocket = HttpsSetup.createSSLServerSocket(8443, "keystore.jks", "changeit");
+                System.out.println("HTTPS listening on https://localhost:8443");
+            } catch (Exception e) {
+                System.err.println("⚠️  HTTPS setup failed: " + e.getMessage());
+                System.err.println("   Run generate-cert.sh first to create keystore.jks");
+            }
+        } else {
+            System.out.println("⚠️  keystore.jks not found — HTTPS disabled.");
+            System.out.println("   Run: bash generate-cert.sh  to enable HTTPS");
+        }
+
+        // --- Accept loop for HTTPS (runs on a dedicated thread) ---
+        // We spin up a separate thread just for HTTPS accept() calls.
+        // Once accepted, connections go into the same shared pool as HTTP.
+        //
+        // Why a separate thread?
+        // accept() is a blocking call — it sits and waits for the next connection.
+        // If we put both accept() calls in the same thread, the second one would
+        // never run while the first is waiting. Two threads = both ports active.
+        if (httpsSocket != null) {
+            final ServerSocket finalHttpsSocket = httpsSocket;
+            Thread httpsAcceptor = new Thread(() -> {
+                while (true) {
+                    try {
+                        Socket client = finalHttpsSocket.accept();
+                        // TLS handshake already completed inside accept()
+                        // handleClient sees a normal Socket — no TLS code needed there
+                        pool.submit(() -> handleClient(client));
+                    } catch (IOException e) {
+                        System.err.println("HTTPS accept error: " + e.getMessage());
+                    }
+                }
+            });
+            httpsAcceptor.setDaemon(true); // dies when main thread dies
+            httpsAcceptor.start();
+        }
+
+        // --- Accept loop for HTTP (runs on main thread) ---
         while (true) {
             Socket clientSocket = serverSocket.accept();
-            System.out.println("Client connected: " + clientSocket.getRemoteSocketAddress());
             pool.submit(() -> handleClient(clientSocket));
         }
     }
 
     // -------------------------------------------------------------------------
-    // Connection handler — keep-alive loop
+    // Connection handler — identical for HTTP and HTTPS
+    // TLS is completely invisible here - the socket behaves the same either way
     // -------------------------------------------------------------------------
 
     private static void handleClient(Socket clientSocket) {
         try {
+            // Log whether this connection is plain HTTP or HTTPS
+            // SSLSocket is a subclass of Socket — instanceof tells us which
+            boolean isHttps = clientSocket instanceof javax.net.ssl.SSLSocket;
+            String protocol = isHttps ? "HTTPS" : "HTTP";
+
             BufferedReader reader = new BufferedReader(
                     new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8));
             OutputStream out = clientSocket.getOutputStream();
@@ -134,7 +182,7 @@ public class SimpleServer {
 
                 String method  = parts[0];
                 String rawPath = parts[1]; // may include query string
-                System.out.println("[" + method + "] " + rawPath);
+                System.out.println("[" + protocol + "] [" + method + "] " + rawPath);
 
                 // --- Parse headers ---
                 String line;
