@@ -1,3 +1,5 @@
+package httpserver;
+
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
@@ -168,59 +170,27 @@ public class SimpleServer {
 
             while (true) {
 
-                // --- Parse request line ---
-                String requestLine;
+                // --- Parse request ---
+                HttpRequest req;
                 try {
-                    requestLine = reader.readLine();
+                    req = HttpRequest.parse(reader);
                 } catch (SocketTimeoutException e) {
                     break;
                 }
+                if (req == null) break;
 
-                if (requestLine == null || requestLine.isEmpty()) break;
-                String[] parts = requestLine.split(" ");
-                if (parts.length < 3) break;
-
-                String method  = parts[0];
-                String rawPath = parts[1]; // may include query string
+                String method       = req.method;
+                String rawPath      = req.rawPath;
+                String cleanPath    = req.cleanPath;
+                String body         = req.body;
+                boolean clientWantsClose = req.wantsClose;
                 System.out.println("[" + protocol + "] [" + method + "] " + rawPath);
-
-                // --- Parse headers ---
-                String line;
-                int contentLength = 0;
-                boolean clientWantsClose = false;
-                String cookieHeader = null;
-
-                while ((line = reader.readLine()) != null && !line.isEmpty()) {
-                    String lower = line.toLowerCase();
-                    if (lower.startsWith("content-length:")) {
-                        contentLength = Integer.parseInt(line.split(":")[1].trim());
-                    }
-                    if (lower.startsWith("connection:") && lower.contains("close")) {
-                        clientWantsClose = true;
-                    }
-                    if (lower.startsWith("cookie:")) {
-                        cookieHeader = line.substring("cookie:".length()).trim();
-                    }
-                }
-
-                // --- Read POST body ---
-                String body = "";
-                if ("POST".equalsIgnoreCase(method) && contentLength > 0) {
-                    char[] bodyChars = new char[contentLength];
-                    reader.read(bodyChars, 0, contentLength);
-                    body = new String(bodyChars);
-                }
 
                 // --- Extract session from cookie (if any) ---
                 // Every request: check if the browser sent a sessionId cookie.
                 // If it did, look it up in the store. Null = not logged in.
-                String sessionId = SessionStore.extractSessionId(cookieHeader);
+                String sessionId = SessionStore.extractSessionId(req.cookieHeader);
                 SessionStore.Session session = sessionStore.get(sessionId);
-
-                // --- Routing ---
-                String cleanPath = rawPath.contains("?")
-                        ? rawPath.substring(0, rawPath.indexOf('?'))
-                        : rawPath;
 
                 // Auth routes — handled separately because they need to set/clear cookies
                 if (cleanPath.equals("/login") && method.equalsIgnoreCase("GET")) {

@@ -1,3 +1,5 @@
+package httpserver;
+
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 
@@ -96,7 +98,9 @@ public class StaticFileServer {
         //   requested canonical:   /home/user/project/public/style.css
         //   startsWith check:      ✅ → continue
         //
-        if (!requested.getPath().startsWith(publicDir.getPath())) {
+        // Compare as Paths, not Strings: Path.startsWith works segment by segment,
+        // so a sibling like "public-secret/" doesn't count as inside "public/".
+        if (!requested.toPath().startsWith(publicDir.toPath())) {
             System.out.println("BLOCKED traversal attempt: " + urlPath);
             return ServeResult.forbidden();
         }

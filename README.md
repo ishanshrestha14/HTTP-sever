@@ -1,200 +1,158 @@
-# 🖥️ Java HTTP Server — Learning Project
+# Java HTTP Server
 
-A ground-up HTTP/1.1 server built in pure Java with no external frameworks. This project is structured as a series of progressive phases, each introducing new concepts in networking, concurrency, and web server design.
+An HTTP/1.1 server written from scratch in plain Java: raw `ServerSocket`s, no frameworks, no runtime dependencies. It handles keep-alive, path-parameter routing, chunked streaming, static files with traversal protection, cookie sessions, and TLS.
+
+**Performance:** ~71,000 requests/sec on a dynamic route, ~55,500 requests/sec on a static file, with p99 latency under 0.7 ms ([benchmark](#benchmark)).
 
 ---
 
-## 📁 Project Structure
+## Features
+
+| Feature | Where | Notes |
+|---|---|---|
+| HTTP/1.1 request parsing | `HttpRequest` | Request line, headers (case-insensitive), `Content-Length` POST bodies |
+| Keep-alive connections | `SimpleServer` | Many requests per TCP connection; honors `Connection: close`; 30s idle timeout |
+| Concurrency | `SimpleServer` | Fixed pool of 16 worker threads (`ExecutorService`) |
+| Routing | `Router` | Exact routes, path params (`/users/:id/posts/:postId`), URL-decoded query strings |
+| Static files | `StaticFileServer` | Served from `public/`, MIME detection for ~20 types, 8 KB streaming, `index.html` fallback |
+| Directory traversal protection | `StaticFileServer` | Canonicalizes the path and checks containment with `Path.startsWith`, which returns 403 for `../` escapes |
+| Chunked transfer encoding | `ChunkedResponse` | `Transfer-Encoding: chunked` for responses of unknown length |
+| Cookie sessions | `SessionStore` | 256-bit `SecureRandom` IDs, `HttpOnly` + `SameSite=Strict`, 30-minute expiry |
+| HTTPS | `HttpsSetup` | `SSLServerSocket` on :8443, TLS 1.2/1.3 only, same handler as HTTP |
+
+---
+
+## Project Structure
 
 ```
-java-http-server/
-├── src/
-│   └── main/
-│       └── java/
-│           ├── HttpServer.java        # Main server entry point
-│           ├── ThreadPool.java        # Worker thread management
-│           ├── RequestHandler.java    # HTTP parsing & routing
-│           ├── Router.java            # URL routing logic
-│           └── MimeTypes.java         # MIME type detection
-├── public/                            # Static files served by the server
+.
+├── pom.xml
+├── generate-cert.sh                  # Creates keystore.jks (self-signed cert) for HTTPS
+├── scripts/
+│   └── loadtest.sh                   # Builds, starts the server, runs wrk
+├── public/                           # Static files served at /
 │   ├── index.html
-│   └── style.css
-└── README.md
+│   ├── style.css
+│   └── app.js
+└── src/
+    ├── main/java/httpserver/
+    │   ├── SimpleServer.java         # Entry point: accept loops, connection handling, route table
+    │   ├── HttpRequest.java          # Parses one request off the connection
+    │   ├── Router.java               # Pattern matching, path params, query strings
+    │   ├── StaticFileServer.java     # File resolution, traversal check, MIME types
+    │   ├── ChunkedResponse.java      # Chunked transfer encoding writer
+    │   ├── SessionStore.java         # In-memory sessions + cookie helpers
+    │   └── HttpsSetup.java           # KeyStore → SSLContext → SSLServerSocket
+    └── test/java/httpserver/
+        ├── HttpRequestTest.java
+        ├── RouterTest.java
+        └── StaticFileServerTest.java
 ```
 
 ---
 
-## ✅ Completed Phases
+## Running
 
-### Phase 1 — Minimal HTTP Server
-> **Core Goal:** Understand the raw TCP → HTTP request/response lifecycle.
-
-**What was built:**
-- Accept incoming TCP connections via `ServerSocket`
-- Parse the HTTP request line (method, path, HTTP version) and headers
-- Send a properly formatted HTTP/1.1 response
-- Set correct `Content-Length` and `Content-Type` headers
-- Basic routing for `/` and `/hello`
-
-**Key concepts learned:**
-- HTTP is just text over TCP
-- The structure of a raw HTTP request and response
-- Why `Content-Length` matters — clients use it to know when the body ends
-
----
-
-### Phase 2 — Concurrency + POST + Static Files
-> **Core Goal:** Handle multiple clients simultaneously and serve real content.
-
-**What was built:**
-- Thread pool for handling concurrent client connections
-- POST body reading (using `Content-Length` to read the correct number of bytes)
-- Extended routing: `/`, `/hello`, `/submit`
-- Static file serving from a `public/` directory
-- Basic MIME type detection (HTML, plain text, etc.)
-- Proper response headers for all routes
-
-**Key concepts learned:**
-- Why a single-threaded server blocks all other clients
-- How a thread pool limits resource usage vs. spawning unlimited threads
-- How POST bodies differ from GET — they follow the headers after a blank line
-- How static file servers work under the hood
-
----
-
-## 🛠️ Remaining Phases
-
-### Phase 3 — Advanced HTTP Handling
-
-#### 3.1 Keep-Alive Connections
-Handle multiple requests over a single TCP connection (HTTP/1.1 default behavior).
-
-- Don't close the socket after each response
-- Read the next request on the same connection
-- Respect `Connection: close` header to end the session
-- Add idle connection timeouts to prevent resource leaks
-
-> **Why it matters:** Opening a new TCP connection for every request is expensive. Keep-alive dramatically reduces latency on pages with many assets.
-
-#### 3.2 Dynamic Routing / Mini Router
-Support parameterized URLs and query strings — the foundation of any REST API.
-
-- Route patterns like `/users/:id` and `/posts/:postId`
-- Extract and expose URL parameters to handlers
-- Parse query strings: `/search?q=java&page=2`
-- Middleware-style hooks for logging and simulated auth
-
-> **Why it matters:** Real applications route to different logic based on URL structure, not just static paths.
-
-#### 3.3 Chunked Transfer / Streaming Responses
-Stream large responses without loading them fully into memory.
-
-- Implement `Transfer-Encoding: chunked`
-- Stream files in chunks (e.g., 8KB at a time)
-- Handle large file downloads efficiently
-
-> **Why it matters:** Loading a 500MB file into a byte array before sending it would crash the JVM. Streaming is mandatory for large content.
-
-#### 3.4 Better MIME / Static File Handling
-Make static file serving production-quality.
-
-- Detect content type from file extension (CSS, JS, PNG, JPEG, SVG, etc.)
-- Prevent `../` directory traversal attacks
-- Return proper `404` for missing files
-- Optionally: support `If-Modified-Since` caching headers
-
-> **Why it matters:** Security and correctness — a server that serves `../../etc/passwd` is dangerous, and wrong MIME types break browsers.
-
----
-
-### Phase 4 — Optional Learning Extensions
-
-| Feature | What You'll Learn |
-|---|---|
-| Basic templating (`<%= name %>`) | String parsing, server-side rendering concepts |
-| Cookie handling & sessions | Stateless HTTP + how sessions are faked with cookies |
-| Request/response logging | Observability, middleware patterns |
-| Metrics (request count, latency) | Performance monitoring basics |
-| Minimal HTTPS (SSLContext) | TLS handshake, `SSLServerSocket`, certificate basics |
-
----
-
-## 🚀 Running the Server
+Requires Java 17+ and Maven.
 
 ```bash
-# Compile
-javac -d out src/main/java/*.java
-
-# Run (default port 8080)
-java -cp out HttpServer
-
-# Test with curl
-curl http://localhost:8080/
-curl http://localhost:8080/hello
-curl -X POST -d "name=Alice" http://localhost:8080/submit
+mvn package
+java -jar target/java-http-server-1.0-SNAPSHOT.jar
+# → http://localhost:8080
 ```
 
----
+Run from the repository root. The server looks for `public/` and `keystore.jks` relative to the working directory.
 
-## 🧪 Manual Testing Cheatsheet
+### HTTPS (optional)
 
 ```bash
-# GET requests
-curl -v http://localhost:8080/
-curl -v http://localhost:8080/hello
+bash generate-cert.sh       # writes keystore.jks (self-signed, CN=localhost)
+java -jar target/java-http-server-1.0-SNAPSHOT.jar
+# → https://localhost:8443  (browser will warn about the self-signed cert)
+```
 
-# POST request
-curl -v -X POST -d "message=hello" http://localhost:8080/submit
+If `keystore.jks` is missing, the server logs a warning and runs HTTP only.
 
-# Static file
-curl http://localhost:8080/index.html
+### Routes
 
-# Test keep-alive (Phase 3)
-curl --http1.1 -v http://localhost:8080/ http://localhost:8080/hello
+| Method | Path | What it does |
+|---|---|---|
+| GET | `/` | Home page with links |
+| GET | `/hello` | Plain HTML response |
+| POST | `/submit` | Echoes the request body |
+| GET | `/users/:id` | Path parameter |
+| GET | `/users/:id/posts/:postId` | Two path parameters |
+| GET | `/search?q=…&page=…` | Query string parameters |
+| GET | `/stream/countdown` | Chunked response, one chunk every 500 ms |
+| GET | `/stream/generate` | Chunked HTML table, 20 rows |
+| GET/POST | `/login` | Login form / credential check (try `ishan` / `password123`) |
+| GET | `/dashboard` | Session-protected; redirects to `/login` without a valid cookie |
+| GET | `/logout` | Destroys the session and clears the cookie |
+| GET | anything else | Static file from `public/`, or 404 |
 
-# Test path param (Phase 3)
+### Try it with curl
+
+```bash
 curl http://localhost:8080/users/42
-
-# Test query string (Phase 3)
-curl "http://localhost:8080/search?q=test&page=1"
+curl "http://localhost:8080/search?q=java&page=2"
+curl -d "name=Alice" http://localhost:8080/submit
+curl -N http://localhost:8080/stream/countdown                    # watch chunks arrive
+curl -v http://localhost:8080/hello http://localhost:8080/users/1  # 2nd request reuses the connection
+curl --path-as-is http://localhost:8080/../pom.xml                # 403 Forbidden
 ```
 
 ---
 
-## 📚 HTTP Reference
+## Tests
 
-### Request Format
-```
-GET /path HTTP/1.1\r\n
-Host: localhost:8080\r\n
-Connection: keep-alive\r\n
-\r\n
+```bash
+mvn test
 ```
 
-### Response Format
-```
-HTTP/1.1 200 OK\r\n
-Content-Type: text/html\r\n
-Content-Length: 42\r\n
-\r\n
-<body goes here>
-```
+19 JUnit 5 tests:
 
-### Common Status Codes Used
-| Code | Meaning |
-|---|---|
-| `200 OK` | Success |
-| `404 Not Found` | Route or file doesn't exist |
-| `400 Bad Request` | Malformed request |
-| `405 Method Not Allowed` | Wrong HTTP method for route |
-| `500 Internal Server Error` | Unhandled server exception |
+- **`HttpRequestTest`**: request line and query split, `Content-Length` body reads (ignores trailing bytes), case-insensitive headers, two pipelined requests on one keep-alive stream, null on malformed or closed input.
+- **`RouterTest`**: exact matches, single and multiple path params, trailing slashes, path vs. query params, segment-count and method mismatches.
+- **`StaticFileServerTest`**: serving inside `public/`, `index.html` fallback, 404s, and traversal attempts (`/../secret.txt`, `/css/../../secret.txt`, `/../../../../etc/passwd`, plus the sibling-prefix case `/../public-secret/key.txt`). Uses a JUnit `@TempDir`.
 
 ---
 
-## 💡 Design Decisions
+## Benchmark
 
-**Why no frameworks?** The goal is to understand what frameworks like Tomcat, Netty, and Spring MVC abstract away — parsing raw bytes, managing sockets, and speaking the HTTP protocol directly.
+```bash
+bash scripts/loadtest.sh            # needs wrk: brew install wrk
+```
 
-**Why Java threads and not async/NIO?** Threads are conceptually simpler and map well to the request-per-thread model. NIO and virtual threads (Project Loom) are natural next steps after mastering the basics.
+`wrk -t4 -c16 -d30s --latency`, with the server and wrk on the same machine (Apple M4 Pro, 12 cores, 24 GB, OpenJDK 25). Request logging goes to `/dev/null`.
 
-**Why a thread pool and not unlimited threads?** Unbounded thread creation will exhaust memory under load. A fixed pool provides backpressure — requests queue up rather than crashing the server.
+| Endpoint | Requests/sec | p50 | p99 | Errors |
+|---|---|---|---|---|
+| `GET /users/42` (router + path param) | **70,987** | 0.22 ms | 0.31 ms | 0 |
+| `GET /index.html` (static file from disk) | **55,517** | 0.27 ms | 0.62 ms | 0 |
+
+These are loopback numbers. They show request-handling overhead, not real network throughput.
+
+**Why 16 connections:** The worker pool has 16 threads, and each worker stays pinned to one keep-alive connection until it closes or idles out (30s). Throughput at `-c100` is the same as at `-c16` (~72k req/s), but only 16 connections get served. The other 84 wait, and a 17th client gets no response until a worker frees up. See [Limitations](#known-limitations).
+
+---
+
+## Design Decisions
+
+**No frameworks.** The point is to see what Tomcat, Netty, and Spring MVC hide: parsing bytes off a socket, framing responses with `Content-Length` or chunks, and managing connection lifetimes.
+
+**Threads, not NIO.** Thread-per-connection with blocking I/O is the simplest model to reason about. The handler reads like a script: read request, route, write response, loop.
+
+**Fixed thread pool.** Unbounded thread creation runs out of memory under load. A fixed pool caps resource use, but with keep-alive it also caps concurrent connections (see below).
+
+**TLS is transparent.** `SSLServerSocket.accept()` returns a socket whose streams are already encrypted, so HTTP and HTTPS share one `handleClient` method.
+
+**Path-based traversal check.** `getCanonicalFile()` resolves `..` and symlinks, then `Path.startsWith` compares whole path segments. A plain `String.startsWith` would treat `/srv/public-secret` as inside `/srv/public`. There is a test for this case.
+
+---
+
+## Known Limitations
+
+- **Connection cap of 16.** Keep-alive connections each hold a worker thread, so client 17 waits. Fixes: switch to virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`, Java 21+), or move to NIO selectors.
+- **No HTML escaping.** `/submit`, `/search` and `/users/:id` echo user input into HTML as-is (reflected XSS). This is acceptable for a learning project but not for anything public.
+- **Request bodies** are read as characters, not bytes, so `Content-Length` is only exact for ASCII bodies. Only `Content-Length` bodies are supported, not chunked request bodies.
+- **Demo credentials** are hard-coded in plain text in `SimpleServer`. Sessions live in memory and are lost on restart.
