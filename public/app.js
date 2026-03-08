@@ -1,0 +1,1 @@
+console.log("app.js loaded correctly — MIME type was application/javascript");
