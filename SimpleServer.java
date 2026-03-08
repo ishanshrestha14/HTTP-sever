@@ -1,12 +1,24 @@
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.*;
 
 public class SimpleServer {
+    // -------------------------------------------------------------------------
+    // Shared state — one instance, shared across all threads
+    // -------------------------------------------------------------------------
 
+    // The session store is a singleton — all threads read/write the same map.
+    // ConcurrentHashMap inside makes it thread-safe.
+    private static final SessionStore sessionStore = new SessionStore();
+
+    // Fake user database — in a real app this would be a database with hashed passwords.
+    // NEVER store plain-text passwords in production.
+    private static final Map<String, String> USERS = Map.of(
+            "ishan",  "password123",
+            "admin",  "admin"
+    );
     // -------------------------------------------------------------------------
     // Route definitions — register all your routes here, at the top.
     // Adding a new route = one new line. No touching the server loop.
